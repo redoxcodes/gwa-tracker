@@ -44,12 +44,14 @@ def login(page):
     page.screenshot(path="debug_login_screen.png")
 
     try:
-        # Two nested dialog elements exist on this page - the input field
-        # lives in the first "dialog" role element, not the aria-modal wrapper
-        dialog = page.get_by_role("dialog").first
-        dialog.wait_for(timeout=15000)
-        username_input = dialog.get_by_placeholder("Email or username")
-        username_input.wait_for(timeout=15000)
+        # Stop matching by placeholder text (unreliable) - target the
+        # aria-modal dialog (confirmed to load) and grab its first input field directly
+        dialog = page.locator('div[role="dialog"][aria-modal="true"]')
+        dialog.wait_for(state="visible", timeout=15000)
+        page.wait_for_timeout(1000)
+
+        username_input = dialog.locator('input').first
+        username_input.wait_for(state="visible", timeout=15000)
         username_input.click()
         page.wait_for_timeout(500)
         username_input.type(X_USERNAME, delay=100)  # type like a human, not instant fill
