@@ -45,4 +45,5 @@ jobs:
           git config user.email "actions@github.com"
           git add seen_posts.json
           git commit -m "Update seen posts" || echo "No changes to commit"
+          git pull --rebase origin main
           git push
