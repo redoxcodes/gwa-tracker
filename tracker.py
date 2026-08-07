@@ -44,10 +44,13 @@ def login(page):
     page.screenshot(path="debug_login_screen.png")
 
     try:
-        # X's login field is labeled "Email or username" - there can be a
-        # hidden duplicate field behind the dialog, so target only the visible one
-        username_input = page.locator('input[placeholder="Email or username"]:visible').first
+        # Target the input specifically inside the login dialog/modal,
+        # since a duplicate field exists in the background page behind it
+        dialog = page.locator('div[role="dialog"]')
+        dialog.wait_for(timeout=15000)
+        username_input = dialog.get_by_placeholder("Email or username")
         username_input.wait_for(timeout=15000)
+        username_input.click()
         username_input.fill(X_USERNAME)
         page.keyboard.press("Enter")
         page.wait_for_timeout(3000)
