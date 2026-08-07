@@ -44,9 +44,9 @@ def login(page):
     page.screenshot(path="debug_login_screen.png")
 
     try:
-        # There are two nested dialog elements on this page - target the
-        # actual modal specifically (the one with aria-modal="true")
-        dialog = page.locator('div[role="dialog"][aria-modal="true"]')
+        # Two nested dialog elements exist on this page - the input field
+        # lives in the first "dialog" role element, not the aria-modal wrapper
+        dialog = page.get_by_role("dialog").first
         dialog.wait_for(timeout=15000)
         username_input = dialog.get_by_placeholder("Email or username")
         username_input.wait_for(timeout=15000)
