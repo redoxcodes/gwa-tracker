@@ -51,8 +51,19 @@ def login(page):
         username_input = dialog.get_by_placeholder("Email or username")
         username_input.wait_for(timeout=15000)
         username_input.click()
-        username_input.fill(X_USERNAME)
-        page.keyboard.press("Enter")
+        page.wait_for_timeout(500)
+        username_input.type(X_USERNAME, delay=100)  # type like a human, not instant fill
+        page.wait_for_timeout(1000)
+
+        # Screenshot right after typing, before submitting - confirms text landed
+        page.screenshot(path="debug_after_typing.png")
+
+        # Prefer clicking a visible "Next" button over pressing Enter
+        next_button = dialog.get_by_role("button", name="Next")
+        if next_button.count() > 0:
+            next_button.click()
+        else:
+            page.keyboard.press("Enter")
         page.wait_for_timeout(3000)
 
         # Take another screenshot after submitting username
