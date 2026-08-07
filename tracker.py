@@ -37,29 +37,41 @@ def send_telegram(text):
 
 
 def login(page):
-    page.goto("https://x.com/login")
-    page.wait_for_timeout(3000)
-    page.fill('input[autocomplete="username"]', X_USERNAME)
-    page.keyboard.press("Enter")
-    page.wait_for_timeout(2000)
-    # X sometimes asks for username again or a verification step here.
-    # If that happens, this script may need manual tweaks.
-    page.fill('input[type="password"]', X_PASSWORD)
-    page.keyboard.press("Enter")
+    page.goto("https://x.com/login", wait_until="domcontentloaded")
     page.wait_for_timeout(5000)
+
+    page.screenshot(path="debug_login_screen.png")
+
+    try:
+        page.wait_for_selector('input[autocomplete="username"]', timeout=15000)
+        page.fill('input[autocomplete="username"]', X_USERNAME)
+        page.keyboard.press("Enter")
+        page.wait_for_timeout(3000)
+
+        page.screenshot(path="debug_after_username.png")
+
+        page.wait_for_selector('input[type="password"]', timeout=15000)
+        page.fill('input[type="password"]', X_PASSWORD)
+        page.keyboard.press("Enter")
+        page.wait_for_timeout(5000)
+
+        page.screenshot(path="debug_after_login.png")
+    except Exception as e:
+        page.screenshot(path="debug_login_failed.png")
+        print(f"Login step failed: {e}")
+        raise
 
 
 def get_latest_post(page, username):
     page.goto(f"https://x.com/{username}")
     page.wait_for_timeout(4000)
-    # Find the first tweet link (contains "/status/")
     links = page.eval_on_selector_all(
         'a[href*="/status/"]',
         "els => els.map(e => e.href)"
     )
     if not links:
         return None
-    return links[0].split("?")[0]  # first status link = latest post
+    return links[0].split("?")[0]
 
 
 def main():
@@ -82,7 +94,7 @@ def main():
                     print(f"New post found for {username}: {latest}")
                 else:
                     print(f"No new post for {username}")
-                time.sleep(3)  # slow down between profiles
+                time.sleep(3)
             except Exception as e:
                 print(f"Error checking {username}: {e}")
 
