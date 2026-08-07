@@ -1,0 +1,39 @@
+name: GWA Tracker
+
+on:
+  schedule:
+    - cron: "*/20 * * * *"
+  workflow_dispatch:
+
+jobs:
+  check-posts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Run tracker
+        env:
+          X_USERNAME: ${{ secrets.X_USERNAME }}
+          X_PASSWORD: ${{ secrets.X_PASSWORD }}
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: python tracker.py
+
+      - name: Commit updated seen_posts.json
+        run: |
+          git config user.name "gwa-tracker-bot"
+          git config user.email "actions@github.com"
+          git add seen_posts.json
+          git commit -m "Update seen posts" || echo "No changes to commit"
+          git push
