@@ -44,8 +44,9 @@ def login(page):
     page.screenshot(path="debug_login_screen.png")
 
     try:
-        # X's login field is labeled "Email or username" - target it by placeholder
-        username_input = page.get_by_placeholder("Email or username")
+        # X's login field is labeled "Email or username" - there can be a
+        # hidden duplicate field behind the dialog, so target only the visible one
+        username_input = page.locator('input[placeholder="Email or username"]:visible').first
         username_input.wait_for(timeout=15000)
         username_input.fill(X_USERNAME)
         page.keyboard.press("Enter")
@@ -110,4 +111,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
