@@ -8,11 +8,12 @@ import requests
 X_USERNAME = os.environ["X_USERNAME"]
 X_PASSWORD = os.environ["X_PASSWORD"]
 TG_TOKEN = os.environ["TG_TOKEN"]
-TG_CHAT_ID = os.environ["TG_CHAT_ID"]
 
 SEEN_FILE = "seen_posts.json"
 USERNAMES_FILE = "usernames.txt"
 KEYWORDS_FILE = "keywords.txt"
+SUBSCRIBERS_FILE = "subscribers.json"
+LAST_UPDATE_FILE = "last_update_id.txt"
 
 
 def load_keywords():
@@ -20,6 +21,68 @@ def load_keywords():
         return []
     with open(KEYWORDS_FILE) as f:
         return [line.strip().lower() for line in f if line.strip()]
+
+
+def load_subscribers():
+    if os.path.exists(SUBSCRIBERS_FILE):
+        with open(SUBSCRIBERS_FILE) as f:
+            return json.load(f)
+    return []
+
+
+def save_subscribers(subscribers):
+    with open(SUBSCRIBERS_FILE, "w") as f:
+        json.dump(subscribers, f, indent=2)
+
+
+def load_last_update_id():
+    if os.path.exists(LAST_UPDATE_FILE):
+        with open(LAST_UPDATE_FILE) as f:
+            content = f.read().strip()
+            return int(content) if content else 0
+    return 0
+
+
+def save_last_update_id(update_id):
+    with open(LAST_UPDATE_FILE, "w") as f:
+        f.write(str(update_id))
+
+
+def register_new_subscribers():
+    subscribers = load_subscribers()
+    last_update_id = load_last_update_id()
+
+    url = "https://api.telegram.org/bot" + TG_TOKEN + "/getUpdates"
+    params = {"offset": last_update_id + 1, "timeout": 5}
+    try:
+        response = requests.get(url, params=params, timeout=15)
+        data = response.json()
+    except Exception as e:
+        print("Could not check for new subscribers: " + str(e))
+        return subscribers
+
+    if not data.get("ok"):
+        return subscribers
+
+    highest_update_id = last_update_id
+    for update in data.get("result", []):
+        highest_update_id = max(highest_update_id, update["update_id"])
+        message = update.get("message")
+        if not message:
+            continue
+        chat_id = str(message["chat"]["id"])
+        if chat_id not in subscribers:
+            subscribers.append(chat_id)
+            print("New subscriber added: " + chat_id)
+            requests.post(
+                "https://api.telegram.org/bot" + TG_TOKEN + "/sendMessage",
+                data={"chat_id": chat_id, "text": "You're subscribed! You'll get an alert here whenever a tracked post matches."}
+            )
+
+    if highest_update_id > last_update_id:
+        save_last_update_id(highest_update_id)
+    save_subscribers(subscribers)
+    return subscribers
 
 
 def load_usernames():
@@ -39,9 +102,10 @@ def save_seen(seen):
         json.dump(seen, f, indent=2)
 
 
-def send_telegram(text):
+def send_telegram(text, subscribers):
     url = "https://api.telegram.org/bot" + TG_TOKEN + "/sendMessage"
-    requests.post(url, data={"chat_id": TG_CHAT_ID, "text": text})
+    for chat_id in subscribers:
+        requests.post(url, data={"chat_id": chat_id, "text": text})
 
 
 def login(page):
@@ -115,6 +179,8 @@ def main():
     usernames = load_usernames()
     seen = load_seen()
     keywords = load_keywords()
+    subscribers = register_new_subscribers()
+    print("Current subscriber count: " + str(len(subscribers)))
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -143,11 +209,11 @@ def main():
                         print("New post for " + username + ", but no keyword match - skipped")
                         continue
                     msg = "New post from @" + username + " (matched: " + matched[0] + "):\n" + link
-                    send_telegram(msg)
+                    send_telegram(msg, subscribers)
                     print("New post found for " + username + ": " + link + " (matched: " + str(matched) + ")")
                 else:
                     msg = "New post from @" + username + ":\n" + link
-                    send_telegram(msg)
+                    send_telegram(msg, subscribers)
                     print("New post found for " + username + ": " + link)
 
                 time.sleep(3)
