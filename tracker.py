@@ -17,7 +17,7 @@ KEYWORDS_FILE = "keywords.txt"
 
 def load_keywords():
     if not os.path.exists(KEYWORDS_FILE):
-        return []  # no file = no filtering, send everything
+        return []
     with open(KEYWORDS_FILE) as f:
         return [line.strip().lower() for line in f if line.strip()]
 
@@ -40,7 +40,7 @@ def save_seen(seen):
 
 
 def send_telegram(text):
-    url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
+    url = "https://api.telegram.org/bot" + TG_TOKEN + "/sendMessage"
     requests.post(url, data={"chat_id": TG_CHAT_ID, "text": text})
 
 
@@ -48,10 +48,116 @@ def login(page):
     page.goto("https://x.com/login", wait_until="domcontentloaded")
     page.wait_for_timeout(5000)
 
-    # Take a screenshot right away so we can see what screen actually loaded
     page.screenshot(path="debug_login_screen.png")
 
     try:
-        # Stop matching by placeholder text (unreliable) - target the
-        # aria-modal dialog (confirmed to load) and grab its first input field directly
-        dialog = page.locator('div[role="dialog"][aria
+        dialog_selector = 'div[role="dialog"][aria-modal="true"]'
+        dialog = page.locator(dialog_selector)
+        dialog.wait_for(state="visible", timeout=15000)
+        page.wait_for_timeout(1000)
+
+        username_input = dialog.locator("input").first
+        username_input.wait_for(state="visible", timeout=15000)
+        username_input.click()
+        page.wait_for_timeout(500)
+        username_input.type(X_USERNAME, delay=100)
+        page.wait_for_timeout(1000)
+
+        page.screenshot(path="debug_after_typing.png")
+
+        next_button = dialog.get_by_role("button", name="Next")
+        if next_button.count() > 0:
+            next_button.click()
+        else:
+            page.keyboard.press("Enter")
+        page.wait_for_timeout(3000)
+
+        page.screenshot(path="debug_after_username.png")
+
+        password_selector = 'input[type="password"]'
+        page.wait_for_selector(password_selector, timeout=15000)
+        page.fill(password_selector, X_PASSWORD)
+        page.keyboard.press("Enter")
+        page.wait_for_timeout(5000)
+
+        page.screenshot(path="debug_after_login.png")
+    except Exception as e:
+        page.screenshot(path="debug_login_failed.png")
+        print("Login step failed: " + str(e))
+        raise
+
+
+def get_latest_post(page, username):
+    page.goto("https://x.com/" + username)
+    page.wait_for_timeout(4000)
+
+    article = page.locator("article").first
+    if article.count() == 0:
+        return None, None
+
+    try:
+        text = article.inner_text()
+    except Exception:
+        text = ""
+
+    status_selector = 'a[href*="/status/"]'
+    links = article.locator(status_selector)
+    if links.count() == 0:
+        return None, None
+    link = links.first.get_attribute("href")
+    if link and link.startswith("/"):
+        link = "https://x.com" + link
+
+    return link, text
+
+
+def main():
+    usernames = load_usernames()
+    seen = load_seen()
+    keywords = load_keywords()
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context()
+        page = context.new_page()
+
+        login(page)
+
+        for username in usernames:
+            try:
+                link, text = get_latest_post(page, username)
+                if not link:
+                    print("No post found for " + username)
+                    continue
+
+                if seen.get(username) == link:
+                    print("No new post for " + username)
+                    continue
+
+                seen[username] = link
+
+                if keywords:
+                    text_lower = (text or "").lower()
+                    matched = [kw for kw in keywords if kw in text_lower]
+                    if not matched:
+                        print("New post for " + username + ", but no keyword match - skipped")
+                        continue
+                    msg = "New post from @" + username + " (matched: " + matched[0] + "):\n" + link
+                    send_telegram(msg)
+                    print("New post found for " + username + ": " + link + " (matched: " + str(matched) + ")")
+                else:
+                    msg = "New post from @" + username + ":\n" + link
+                    send_telegram(msg)
+                    print("New post found for " + username + ": " + link)
+
+                time.sleep(3)
+            except Exception as e:
+                print("Error checking " + username + ": " + str(e))
+
+        browser.close()
+
+    save_seen(seen)
+
+
+if __name__ == "__main__":
+    main()
