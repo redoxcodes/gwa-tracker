@@ -27,7 +27,6 @@ jobs:
           X_USERNAME: ${{ secrets.X_USERNAME }}
           X_PASSWORD: ${{ secrets.X_PASSWORD }}
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: python tracker.py
         continue-on-error: true
 
@@ -39,11 +38,11 @@ jobs:
           path: debug_*.png
           if-no-files-found: ignore
 
-      - name: Commit updated seen_posts.json
+      - name: Commit updated tracking files
         run: |
           git config user.name "gwa-tracker-bot"
           git config user.email "actions@github.com"
-          git add seen_posts.json
-          git commit -m "Update seen posts" || echo "No changes to commit"
+          git add seen_posts.json subscribers.json last_update_id.txt
+          git commit -m "Update tracking state" || echo "No changes to commit"
           git pull --rebase origin main
           git push
