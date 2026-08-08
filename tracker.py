@@ -12,6 +12,14 @@ TG_CHAT_ID = os.environ["TG_CHAT_ID"]
 
 SEEN_FILE = "seen_posts.json"
 USERNAMES_FILE = "usernames.txt"
+KEYWORDS_FILE = "keywords.txt"
+
+
+def load_keywords():
+    if not os.path.exists(KEYWORDS_FILE):
+        return []  # no file = no filtering, send everything
+    with open(KEYWORDS_FILE) as f:
+        return [line.strip().lower() for line in f if line.strip()]
 
 
 def load_usernames():
@@ -46,84 +54,4 @@ def login(page):
     try:
         # Stop matching by placeholder text (unreliable) - target the
         # aria-modal dialog (confirmed to load) and grab its first input field directly
-        dialog = page.locator('div[role="dialog"][aria-modal="true"]')
-        dialog.wait_for(state="visible", timeout=15000)
-        page.wait_for_timeout(1000)
-
-        username_input = dialog.locator('input').first
-        username_input.wait_for(state="visible", timeout=15000)
-        username_input.click()
-        page.wait_for_timeout(500)
-        username_input.type(X_USERNAME, delay=100)  # type like a human, not instant fill
-        page.wait_for_timeout(1000)
-
-        # Screenshot right after typing, before submitting - confirms text landed
-        page.screenshot(path="debug_after_typing.png")
-
-        # Prefer clicking a visible "Next" button over pressing Enter
-        next_button = dialog.get_by_role("button", name="Next")
-        if next_button.count() > 0:
-            next_button.click()
-        else:
-            page.keyboard.press("Enter")
-        page.wait_for_timeout(3000)
-
-        # Take another screenshot after submitting username
-        page.screenshot(path="debug_after_username.png")
-
-        page.wait_for_selector('input[type="password"]', timeout=15000)
-        page.fill('input[type="password"]', X_PASSWORD)
-        page.keyboard.press("Enter")
-        page.wait_for_timeout(5000)
-
-        page.screenshot(path="debug_after_login.png")
-    except Exception as e:
-        page.screenshot(path="debug_login_failed.png")
-        print(f"Login step failed: {e}")
-        raise
-
-
-def get_latest_post(page, username):
-    page.goto(f"https://x.com/{username}")
-    page.wait_for_timeout(4000)
-    # Find the first tweet link (contains "/status/")
-    links = page.eval_on_selector_all(
-        'a[href*="/status/"]',
-        "els => els.map(e => e.href)"
-    )
-    if not links:
-        return None
-    return links[0].split("?")[0]  # first status link = latest post
-
-
-def main():
-    usernames = load_usernames()
-    seen = load_seen()
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context()
-        page = context.new_page()
-
-        login(page)
-
-        for username in usernames:
-            try:
-                latest = get_latest_post(page, username)
-                if latest and seen.get(username) != latest:
-                    seen[username] = latest
-                    send_telegram(f"New post from @{username}:\n{latest}")
-                    print(f"New post found for {username}: {latest}")
-                else:
-                    print(f"No new post for {username}")
-                time.sleep(3)  # slow down between profiles
-            except Exception as e:
-                print(f"Error checking {username}: {e}")
-
-        browser.close()
-
-    save_seen(seen)
-
-
-if __name__ == "__main__":
-    main()
+        dialog = page.locator('div[role="dialog"][aria
