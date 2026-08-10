@@ -1,5 +1,9 @@
 name: GWA Tracker
 
+concurrency:
+  group: gwa-tracker
+  cancel-in-progress: false
+
 on:
   schedule:
     - cron: "*/10 * * * *"
