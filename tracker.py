@@ -155,24 +155,34 @@ def get_latest_post(page, username):
     page.goto("https://x.com/" + username)
     page.wait_for_timeout(4000)
 
-    article = page.locator("article").first
-    if article.count() == 0:
+    articles = page.locator("article")
+    count = articles.count()
+    if count == 0:
         return None, None
 
-    try:
-        text = article.inner_text()
-    except Exception:
-        text = ""
+    for i in range(count):
+        article = articles.nth(i)
+        try:
+            article_text = article.inner_text()
+        except Exception:
+            continue
 
-    status_selector = 'a[href*="/status/"]'
-    links = article.locator(status_selector)
-    if links.count() == 0:
-        return None, None
-    link = links.first.get_attribute("href")
-    if link and link.startswith("/"):
-        link = "https://x.com" + link
+        # Skip pinned posts - X always shows these first regardless of recency
+        if "Pinned" in article_text.split("\n")[0:3]:
+            continue
 
-    return link, text
+        status_selector = 'a[href*="/status/"]'
+        links = article.locator(status_selector)
+        if links.count() == 0:
+            continue
+
+        link = links.first.get_attribute("href")
+        if link and link.startswith("/"):
+            link = "https://x.com" + link
+
+        return link, article_text
+
+    return None, None
 
 
 def main():
