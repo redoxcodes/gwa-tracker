@@ -15,6 +15,9 @@ KEYWORDS_FILE = "keywords.txt"
 SUBSCRIBERS_FILE = "subscribers.json"
 LAST_UPDATE_FILE = "last_update_id.txt"
 
+MAX_POSTS_PER_CHECK = 5   # how many recent posts to look at per account
+MAX_SEEN_PER_USER = 30    # cap stored history so the file doesn't grow forever
+
 
 def load_keywords():
     if not os.path.exists(KEYWORDS_FILE):
@@ -91,9 +94,23 @@ def load_usernames():
 
 
 def load_seen():
+    """
+    seen_posts.json format: { "username": ["link1", "link2", ...], ... }
+    Keeps a small rolling history per account so posts that get buried
+    by a newer post within one check window are still caught, without
+    ever re-sending something already recorded.
+    """
     if os.path.exists(SEEN_FILE):
         with open(SEEN_FILE) as f:
-            return json.load(f)
+            data = json.load(f)
+        # migrate old format (single string per user) to list format
+        migrated = {}
+        for user, val in data.items():
+            if isinstance(val, str):
+                migrated[user] = [val]
+            else:
+                migrated[user] = val
+        return migrated
     return {}
 
 
@@ -151,14 +168,17 @@ def login(page):
         raise
 
 
-def get_latest_post(page, username):
+def get_recent_posts(page, username, max_posts=MAX_POSTS_PER_CHECK):
+    """
+    Returns a list of (link, text) tuples for the most recent non-pinned
+    posts, newest first. Returns [] if none could be read.
+    """
     page.goto("https://x.com/" + username)
     page.wait_for_timeout(4000)
 
     articles = page.locator("article")
-    count = articles.count()
-    if count == 0:
-        return None, None
+    count = min(articles.count(), max_posts)
+    posts = []
 
     for i in range(count):
         article = articles.nth(i)
@@ -171,8 +191,7 @@ def get_latest_post(page, username):
         if "Pinned" in article_text.split("\n")[0:3]:
             continue
 
-        status_selector = 'a[href*="/status/"]'
-        links = article.locator(status_selector)
+        links = article.locator('a[href*="/status/"]')
         if links.count() == 0:
             continue
 
@@ -180,9 +199,9 @@ def get_latest_post(page, username):
         if link and link.startswith("/"):
             link = "https://x.com" + link
 
-        return link, article_text
+        posts.append((link, article_text))
 
-    return None, None
+    return posts
 
 
 def main():
@@ -201,30 +220,38 @@ def main():
 
         for username in usernames:
             try:
-                link, text = get_latest_post(page, username)
-                if not link:
+                posts = get_recent_posts(page, username)
+                if not posts:
                     print("No post found for " + username)
                     continue
 
-                if seen.get(username) == link:
+                seen_links = seen.get(username, [])
+                # process oldest-to-newest so alerts arrive in chronological order
+                new_posts = [p for p in reversed(posts) if p[0] not in seen_links]
+
+                if not new_posts:
                     print("No new post for " + username)
                     continue
 
-                seen[username] = link
+                for link, text in new_posts:
+                    seen_links.append(link)
 
-                if keywords:
-                    text_lower = (text or "").lower()
-                    matched = [kw for kw in keywords if kw in text_lower]
-                    if not matched:
-                        print("New post for " + username + ", but no keyword match - skipped")
-                        continue
-                    msg = "New post from @" + username + " (matched: " + matched[0] + "):\n" + link
-                    send_telegram(msg, subscribers)
-                    print("New post found for " + username + ": " + link + " (matched: " + str(matched) + ")")
-                else:
-                    msg = "New post from @" + username + ":\n" + link
-                    send_telegram(msg, subscribers)
-                    print("New post found for " + username + ": " + link)
+                    if keywords:
+                        text_lower = (text or "").lower()
+                        matched = [kw for kw in keywords if kw in text_lower]
+                        if not matched:
+                            print("New post for " + username + ", but no keyword match - skipped")
+                            continue
+                        msg = "New post from @" + username + " (matched: " + matched[0] + "):\n" + link
+                        send_telegram(msg, subscribers)
+                        print("New post found for " + username + ": " + link + " (matched: " + str(matched) + ")")
+                    else:
+                        msg = "New post from @" + username + ":\n" + link
+                        send_telegram(msg, subscribers)
+                        print("New post found for " + username + ": " + link)
+
+                # keep only the most recent N links so the file doesn't grow forever
+                seen[username] = seen_links[-MAX_SEEN_PER_USER:]
 
                 time.sleep(3)
             except Exception as e:
