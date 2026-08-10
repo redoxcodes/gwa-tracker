@@ -16,7 +16,7 @@ KEYWORDS_FILE = "keywords.txt"
 SUBSCRIBERS_FILE = "subscribers.json"
 LAST_UPDATE_FILE = "last_update_id.txt"
 
-MAX_POSTS_PER_CHECK = 5   # how many recent posts to look at per account
+MAX_POSTS_PER_CHECK = 1   # how many recent posts to look at per account (latest post only)
 MAX_SEEN_PER_USER = 30    # cap stored history so the file doesn't grow forever
 MAX_POST_AGE_HOURS = 2    # ignore/skip alerting on posts older than this
 
