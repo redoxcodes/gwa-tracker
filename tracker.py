@@ -202,11 +202,20 @@ def get_recent_posts(page, username, max_posts=MAX_POSTS_PER_CHECK):
         if "Pinned" in article_text.split("\n")[0:3]:
             continue
 
-        links = article.locator('a[href*="/status/"]')
-        if links.count() == 0:
-            continue
+        # Prefer the link wrapping this post's own <time> element - that's
+        # always the tweet's own permalink. Falling back to the first
+        # /status/ link can grab an embedded quoted post's link instead,
+        # which causes quote-tweets to be misread as a duplicate of the
+        # original post they're quoting.
+        time_link = article.locator('a:has(time)').first
+        if time_link.count() > 0:
+            link = time_link.get_attribute("href")
+        else:
+            links = article.locator('a[href*="/status/"]')
+            if links.count() == 0:
+                continue
+            link = links.first.get_attribute("href")
 
-        link = links.first.get_attribute("href")
         if link and link.startswith("/"):
             link = "https://x.com" + link
 
