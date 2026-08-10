@@ -16,7 +16,7 @@ KEYWORDS_FILE = "keywords.txt"
 SUBSCRIBERS_FILE = "subscribers.json"
 LAST_UPDATE_FILE = "last_update_id.txt"
 
-MAX_POSTS_PER_CHECK = 1   # how many recent posts to look at per account (latest post only)
+MAX_POSTS_PER_CHECK = 5   # how many recent posts to look at per account
 MAX_SEEN_PER_USER = 30    # cap stored history so the file doesn't grow forever
 MAX_POST_AGE_HOURS = 2    # ignore/skip alerting on posts older than this
 
@@ -177,7 +177,15 @@ def get_recent_posts(page, username, max_posts=MAX_POSTS_PER_CHECK):
     (UTC) or None if it couldn't be read. Returns [] if none could be read.
     """
     page.goto("https://x.com/" + username)
-    page.wait_for_timeout(4000)
+
+    # Wait specifically for at least one post to render, instead of a blind
+    # fixed delay - fast pages don't waste time, slow pages get more time
+    # instead of being read too early and returning nothing.
+    try:
+        page.wait_for_selector("article", timeout=8000)
+    except Exception:
+        pass
+    page.wait_for_timeout(800)  # brief settle time after article appears
 
     articles = page.locator("article")
     count = min(articles.count(), max_posts)
@@ -273,7 +281,7 @@ def main():
                 # keep only the most recent N links so the file doesn't grow forever
                 seen[username] = seen_links[-MAX_SEEN_PER_USER:]
 
-                time.sleep(3)
+                time.sleep(1)
             except Exception as e:
                 print("Error checking " + username + ": " + str(e))
 
