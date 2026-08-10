@@ -1,11 +1,8 @@
 wulfcryptox
 stekisteks
 skylinee
-‪MattInWeb3‬
-CryptoWendyO
 MarcellxMarcell
 dxrnell
-ZypherHQ
 GordonGekko
 zubic_eth
 Ministerr
@@ -33,3 +30,6 @@ DailyLoud
 ralphscall
 Skel
 nexocooker
+ZypherHQ
+CryptoWendyO
+MattInWeb3
