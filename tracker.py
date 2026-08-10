@@ -3,6 +3,7 @@ import json
 import time
 from playwright.sync_api import sync_playwright
 import requests
+from datetime import datetime, timezone, timedelta
 
 # ---- CONFIG (comes from GitHub Secrets, not hardcoded) ----
 X_USERNAME = os.environ["X_USERNAME"]
@@ -17,6 +18,7 @@ LAST_UPDATE_FILE = "last_update_id.txt"
 
 MAX_POSTS_PER_CHECK = 5   # how many recent posts to look at per account
 MAX_SEEN_PER_USER = 30    # cap stored history so the file doesn't grow forever
+MAX_POST_AGE_HOURS = 15   # ignore/skip alerting on posts older than this
 
 
 def load_keywords():
@@ -170,8 +172,9 @@ def login(page):
 
 def get_recent_posts(page, username, max_posts=MAX_POSTS_PER_CHECK):
     """
-    Returns a list of (link, text) tuples for the most recent non-pinned
-    posts, newest first. Returns [] if none could be read.
+    Returns a list of (link, text, posted_at) tuples for the most recent
+    non-pinned posts, newest first. posted_at is a timezone-aware datetime
+    (UTC) or None if it couldn't be read. Returns [] if none could be read.
     """
     page.goto("https://x.com/" + username)
     page.wait_for_timeout(4000)
@@ -199,7 +202,17 @@ def get_recent_posts(page, username, max_posts=MAX_POSTS_PER_CHECK):
         if link and link.startswith("/"):
             link = "https://x.com" + link
 
-        posts.append((link, article_text))
+        posted_at = None
+        try:
+            time_el = article.locator("time").first
+            if time_el.count() > 0:
+                datetime_str = time_el.get_attribute("datetime")
+                if datetime_str:
+                    posted_at = datetime.fromisoformat(datetime_str.replace("Z", "+00:00"))
+        except Exception:
+            posted_at = None
+
+        posts.append((link, article_text, posted_at))
 
     return posts
 
@@ -233,8 +246,15 @@ def main():
                     print("No new post for " + username)
                     continue
 
-                for link, text in new_posts:
+                now = datetime.now(timezone.utc)
+                cutoff = timedelta(hours=MAX_POST_AGE_HOURS)
+
+                for link, text, posted_at in new_posts:
                     seen_links.append(link)
+
+                    if posted_at is not None and (now - posted_at) > cutoff:
+                        print("New post for " + username + ", but older than " + str(MAX_POST_AGE_HOURS) + "h - skipped")
+                        continue
 
                     if keywords:
                         text_lower = (text or "").lower()
