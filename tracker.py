@@ -241,6 +241,14 @@ def main():
     subscribers = register_new_subscribers()
     print("Current subscriber count: " + str(len(subscribers)))
 
+    # Flat set of every link ever seen, across ALL accounts - prevents the
+    # same underlying post from being alerted twice when it surfaces under
+    # a different account (e.g. a quote-tweet or retweet of an already
+    # alerted post).
+    global_seen_links = set()
+    for links in seen.values():
+        global_seen_links.update(links)
+
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context()
@@ -268,6 +276,11 @@ def main():
 
                 for link, text, posted_at in new_posts:
                     seen_links.append(link)
+
+                    if link in global_seen_links:
+                        print("New post for " + username + ", but link already alerted under another account - skipped")
+                        continue
+                    global_seen_links.add(link)
 
                     if posted_at is not None and (now - posted_at) > cutoff:
                         print("New post for " + username + ", but older than " + str(MAX_POST_AGE_HOURS) + "h - skipped")
