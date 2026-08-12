@@ -1,4 +1,4 @@
-wulfcryptox
+lwulfcryptox
 stekisteks
 skylinee
 MarcellxMarcell
@@ -35,7 +35,6 @@ CryptoWendyO
 MattInWeb3
 KookCapitalLLC
 WisdomMatic
-XMaximist
 0xMrPinky
 CalebSol
 notEezzy
@@ -43,3 +42,4 @@ CryptoZin
 Booksey
 lynk0x
 VOLTIXSOL
+MandoCT
