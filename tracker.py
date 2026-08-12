@@ -139,6 +139,7 @@ def is_logged_in(page):
     try:
         page.goto("https://x.com/home", wait_until="domcontentloaded")
         page.wait_for_timeout(3000)
+        page.screenshot(path="debug_session_check.png")
         compose_button = page.locator('[data-testid="SideNav_NewTweet_Button"]')
         return compose_button.count() > 0
     except Exception:
