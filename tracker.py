@@ -20,6 +20,10 @@ MAX_POSTS_PER_CHECK = 2   # how many recent posts to look at per account
 MAX_SEEN_PER_USER = 30    # cap stored history so the file doesn't grow forever
 MAX_POST_AGE_HOURS = 10 / 60  # ignore/skip alerting on posts older than this (10 min)
 
+SESSION_FILE = "session_state.json"   # saved login session, reused between runs
+POST_PREVIEW_CHARS = 150              # how much post text to include in Telegram alerts
+EMPTY_RESULT_RETRIES = 1              # retries for accounts that return no posts at all
+
 
 def load_keywords():
     if not os.path.exists(KEYWORDS_FILE):
@@ -125,6 +129,20 @@ def send_telegram(text, subscribers):
     url = "https://api.telegram.org/bot" + TG_TOKEN + "/sendMessage"
     for chat_id in subscribers:
         requests.post(url, data={"chat_id": chat_id, "text": text})
+
+
+def is_logged_in(page):
+    """
+    Checks whether the current browser session is already authenticated,
+    by looking for the compose-tweet button that only appears when logged in.
+    """
+    try:
+        page.goto("https://x.com/home", wait_until="domcontentloaded")
+        page.wait_for_timeout(3000)
+        compose_button = page.locator('[data-testid="SideNav_NewTweet_Button"]')
+        return compose_button.count() > 0
+    except Exception:
+        return False
 
 
 def login(page):
@@ -234,6 +252,22 @@ def get_recent_posts(page, username, max_posts=MAX_POSTS_PER_CHECK):
     return posts
 
 
+def get_recent_posts_with_retry(page, username, max_posts=MAX_POSTS_PER_CHECK, retries=EMPTY_RESULT_RETRIES):
+    """
+    Wraps get_recent_posts() with a retry for accounts that come back
+    completely empty - often caused by a slow-rendering profile page
+    rather than a genuinely missing/broken account.
+    """
+    for attempt in range(retries + 1):
+        posts = get_recent_posts(page, username, max_posts)
+        if posts:
+            return posts
+        if attempt < retries:
+            print("No post found for " + username + " - retrying once...")
+            page.wait_for_timeout(3000)
+    return []
+
+
 def main():
     usernames = load_usernames()
     seen = load_seen()
@@ -241,24 +275,25 @@ def main():
     subscribers = register_new_subscribers()
     print("Current subscriber count: " + str(len(subscribers)))
 
-    # Flat set of every link ever seen, across ALL accounts - prevents the
-    # same underlying post from being alerted twice when it surfaces under
-    # a different account (e.g. a quote-tweet or retweet of an already
-    # alerted post).
-    global_seen_links = set()
-    for links in seen.values():
-        global_seen_links.update(links)
-
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        context = browser.new_context()
+        storage_state = SESSION_FILE if os.path.exists(SESSION_FILE) else None
+        context = browser.new_context(storage_state=storage_state)
         page = context.new_page()
 
-        login(page)
+        if storage_state and is_logged_in(page):
+            print("Reusing existing session - login skipped")
+        else:
+            login(page)
+
+        try:
+            context.storage_state(path=SESSION_FILE)
+        except Exception as e:
+            print("Could not save session state: " + str(e))
 
         for username in usernames:
             try:
-                posts = get_recent_posts(page, username)
+                posts = get_recent_posts_with_retry(page, username)
                 if not posts:
                     print("No post found for " + username)
                     continue
@@ -277,26 +312,23 @@ def main():
                 for link, text, posted_at in new_posts:
                     seen_links.append(link)
 
-                    if link in global_seen_links:
-                        print("New post for " + username + ", but link already alerted under another account - skipped")
-                        continue
-                    global_seen_links.add(link)
-
                     if posted_at is not None and (now - posted_at) > cutoff:
                         print("New post for " + username + ", but older than " + str(MAX_POST_AGE_HOURS) + "h - skipped")
                         continue
+
+                    snippet = " ".join((text or "").split())[:POST_PREVIEW_CHARS]
 
                     if keywords:
                         text_lower = (text or "").lower()
                         matched = [kw for kw in keywords if kw in text_lower]
                         if not matched:
-                            print("New post for " + username + ", but no keyword match - skipped")
+                            print("New post for " + username + ", but no keyword match - skipped. Text seen: " + snippet)
                             continue
-                        msg = "New post from @" + username + " (matched: " + matched[0] + "):\n" + link
+                        msg = "New post from @" + username + " (matched: " + matched[0] + "):\n" + snippet + "\n" + link
                         send_telegram(msg, subscribers)
                         print("New post found for " + username + ": " + link + " (matched: " + str(matched) + ")")
                     else:
-                        msg = "New post from @" + username + ":\n" + link
+                        msg = "New post from @" + username + ":\n" + snippet + "\n" + link
                         send_telegram(msg, subscribers)
                         print("New post found for " + username + ": " + link)
 
