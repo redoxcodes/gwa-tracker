@@ -46,7 +46,7 @@ jobs:
         run: |
           git config user.name "gwa-tracker-bot"
           git config user.email "actions@github.com"
-          git add seen_posts.json subscribers.json last_update_id.txt
+          git add seen_posts.json subscribers.json last_update_id.txt session_state.json
           git commit -m "Update tracking state" || echo "No changes to commit"
           git pull --rebase origin main
           git push
