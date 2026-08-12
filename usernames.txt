@@ -43,3 +43,4 @@ Booksey
 lynk0x
 VOLTIXSOL
 MandoCT
+ObitoCrypto
