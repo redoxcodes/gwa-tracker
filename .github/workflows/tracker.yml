@@ -6,7 +6,7 @@ concurrency:
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "7,22,37,52 * * * *"
   workflow_dispatch:
 
 jobs:
@@ -32,21 +32,4 @@ jobs:
           X_PASSWORD: ${{ secrets.X_PASSWORD }}
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
         run: python tracker.py
-        continue-on-error: true
-
-      - name: Upload debug screenshots
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: debug-screenshots
-          path: debug_*.png
-          if-no-files-found: ignore
-
-      - name: Commit updated tracking files
-        run: |
-          git config user.name "gwa-tracker-bot"
-          git config user.email "actions@github.com"
-          git add seen_posts.json subscribers.json last_update_id.txt session_state.json
-          git commit -m "Update tracking state" || echo "No changes to commit"
-          git pull --rebase origin main
-          git push
+        continue-on-error:
