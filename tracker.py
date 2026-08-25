@@ -146,47 +146,62 @@ def is_logged_in(page):
         return False
 
 
-def login(page):
+def login_attempt(page):
     page.goto("https://x.com/login", wait_until="domcontentloaded")
     page.wait_for_timeout(5000)
 
     page.screenshot(path="debug_login_screen.png")
 
-    try:
-        dialog_selector = 'div[role="dialog"][aria-modal="true"]'
-        dialog = page.locator(dialog_selector)
-        dialog.wait_for(state="visible", timeout=15000)
-        page.wait_for_timeout(1000)
+    dialog_selector = 'div[role="dialog"][aria-modal="true"]'
+    dialog = page.locator(dialog_selector)
+    dialog.wait_for(state="visible", timeout=15000)
+    page.wait_for_timeout(1000)
 
-        username_input = dialog.locator("input").first
-        username_input.wait_for(state="visible", timeout=15000)
-        username_input.click()
-        page.wait_for_timeout(500)
-        username_input.type(X_USERNAME, delay=100)
-        page.wait_for_timeout(1000)
+    username_input = dialog.locator("input").first
+    username_input.wait_for(state="visible", timeout=15000)
+    username_input.click()
+    page.wait_for_timeout(500)
+    username_input.type(X_USERNAME, delay=100)
+    page.wait_for_timeout(1000)
 
-        page.screenshot(path="debug_after_typing.png")
+    page.screenshot(path="debug_after_typing.png")
 
-        next_button = dialog.get_by_role("button", name="Next")
-        if next_button.count() > 0:
-            next_button.click()
-        else:
-            page.keyboard.press("Enter")
-        page.wait_for_timeout(3000)
-
-        page.screenshot(path="debug_after_username.png")
-
-        password_selector = 'input[type="password"]'
-        page.wait_for_selector(password_selector, timeout=15000)
-        page.fill(password_selector, X_PASSWORD)
+    next_button = dialog.get_by_role("button", name="Next")
+    if next_button.count() > 0:
+        next_button.click()
+    else:
         page.keyboard.press("Enter")
-        page.wait_for_timeout(5000)
+    page.wait_for_timeout(3000)
 
-        page.screenshot(path="debug_after_login.png")
-    except Exception as e:
-        page.screenshot(path="debug_login_failed.png")
-        print("Login step failed: " + str(e))
-        raise
+    page.screenshot(path="debug_after_username.png")
+
+    password_selector = 'input[type="password"]'
+    page.wait_for_selector(password_selector, timeout=15000)
+    page.fill(password_selector, X_PASSWORD)
+    page.keyboard.press("Enter")
+    page.wait_for_timeout(5000)
+
+    page.screenshot(path="debug_after_login.png")
+
+
+def login(page, retries=1):
+    """
+    Wraps login_attempt() with a retry - X occasionally loads slowly
+    (stuck on its splash screen) and a single timeout shouldn't crash
+    the whole run when a second attempt would likely succeed.
+    """
+    for attempt in range(retries + 1):
+        try:
+            login_attempt(page)
+            return
+        except Exception as e:
+            page.screenshot(path="debug_login_failed.png")
+            print("Login step failed (attempt " + str(attempt + 1) + "): " + str(e))
+            if attempt < retries:
+                print("Retrying login after a short wait...")
+                page.wait_for_timeout(5000)
+            else:
+                raise
 
 
 def get_recent_posts(page, username, max_posts=MAX_POSTS_PER_CHECK):
@@ -313,11 +328,8 @@ def main():
                 for link, text, posted_at in new_posts:
                     seen_links.append(link)
 
-                    if posted_at is not None and (now - posted_at) > cutoff:
-                        print("New post for " + username + ", but older than " + str(MAX_POST_AGE_HOURS) + "h - skipped")
-                        continue
-
                     snippet = " ".join((text or "").split())[:POST_PREVIEW_CHARS]
+                    is_too_old = posted_at is not None and (now - posted_at) > cutoff
 
                     if keywords:
                         text_lower = (text or "").lower()
@@ -325,10 +337,16 @@ def main():
                         if not matched:
                             print("New post for " + username + ", but no keyword match - skipped. Text seen: " + snippet)
                             continue
+                        if is_too_old:
+                            print("New post for " + username + " matched keywords but is older than " + str(MAX_POST_AGE_HOURS) + "h - skipped. Text seen: " + snippet)
+                            continue
                         msg = "New post from @" + username + " (matched: " + matched[0] + "):\n" + snippet + "\n" + link
                         send_telegram(msg, subscribers)
                         print("New post found for " + username + ": " + link + " (matched: " + str(matched) + ")")
                     else:
+                        if is_too_old:
+                            print("New post for " + username + ", but older than " + str(MAX_POST_AGE_HOURS) + "h - skipped")
+                            continue
                         msg = "New post from @" + username + ":\n" + snippet + "\n" + link
                         send_telegram(msg, subscribers)
                         print("New post found for " + username + ": " + link)
