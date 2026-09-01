@@ -6,7 +6,8 @@ concurrency:
 
 on:
   schedule:
-    - cron: "7,22,37,52 * * * *"
+    - cron: "7,37 * * * *"
+    - cron: "22,52 * * * *"
   workflow_dispatch:
 
 jobs:
@@ -26,11 +27,23 @@ jobs:
           pip install -r requirements.txt
           playwright install --with-deps chromium
 
+      - name: Determine batch
+        id: batch
+        run: |
+          if [ "${{ github.event.schedule }}" == "7,37 * * * *" ]; then
+            echo "batch=A" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event.schedule }}" == "22,52 * * * *" ]; then
+            echo "batch=B" >> $GITHUB_OUTPUT
+          else
+            echo "batch=ALL" >> $GITHUB_OUTPUT
+          fi
+
       - name: Run tracker
         env:
           X_USERNAME: ${{ secrets.X_USERNAME }}
           X_PASSWORD: ${{ secrets.X_PASSWORD }}
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          BATCH: ${{ steps.batch.outputs.batch }}
         run: python tracker.py
         continue-on-error: true
 
