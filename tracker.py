@@ -18,7 +18,7 @@ LAST_UPDATE_FILE = "last_update_id.txt"
 
 MAX_POSTS_PER_CHECK = 2   # how many recent posts to look at per account
 MAX_SEEN_PER_USER = 30    # cap stored history so the file doesn't grow forever
-MAX_POST_AGE_HOURS = 15 / 60  # ignore/skip alerting on posts older than this (15 min)
+MAX_POST_AGE_HOURS = 35 / 60  # ignore/skip alerting on posts older than this (35 min - covers batch cadence)
 
 SESSION_FILE = "session_state.json"   # saved login session, reused between runs
 POST_PREVIEW_CHARS = 150              # how much post text to include in Telegram alerts
@@ -97,6 +97,24 @@ def register_new_subscribers():
 def load_usernames():
     with open(USERNAMES_FILE) as f:
         return [line.strip().lstrip("@") for line in f if line.strip()]
+
+
+def get_batch_usernames(usernames, batch):
+    """
+    Splits the full username list into two roughly-equal halves so a single
+    run never has to check every account - checking 50+ accounts in one run
+    was causing X to silently degrade/rate-limit the session partway
+    through, making accounts near the end of the list fail intermittently.
+    BATCH env var controls which half runs; "ALL" (manual runs) checks everyone.
+    """
+    if batch == "ALL":
+        return usernames
+    midpoint = (len(usernames) + 1) // 2
+    if batch == "A":
+        return usernames[:midpoint]
+    elif batch == "B":
+        return usernames[midpoint:]
+    return usernames
 
 
 def load_seen():
@@ -285,11 +303,13 @@ def get_recent_posts_with_retry(page, username, max_posts=MAX_POSTS_PER_CHECK, r
 
 
 def main():
-    usernames = load_usernames()
+    batch = os.environ.get("BATCH", "ALL")
+    usernames = get_batch_usernames(load_usernames(), batch)
     seen = load_seen()
     keywords = load_keywords()
     subscribers = register_new_subscribers()
     print("Current subscriber count: " + str(len(subscribers)))
+    print("Running batch: " + batch + " (" + str(len(usernames)) + " accounts)")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
