@@ -239,6 +239,9 @@ def get_recent_posts(page, username, max_posts=MAX_POSTS_PER_CHECK):
         pass
     page.wait_for_timeout(800)  # brief settle time after article appears
 
+    if os.environ.get("SKIP_LOGIN", "false").lower() == "true" and not os.path.exists("debug_loggedout_profile.png"):
+        page.screenshot(path="debug_loggedout_profile.png")
+
     articles = page.locator("article")
     count = min(articles.count(), max_posts)
     posts = []
@@ -313,14 +316,21 @@ def main():
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        storage_state = SESSION_FILE if os.path.exists(SESSION_FILE) else None
-        context = browser.new_context(storage_state=storage_state)
-        page = context.new_page()
+        skip_login = os.environ.get("SKIP_LOGIN", "false").lower() == "true"
 
-        if storage_state and is_logged_in(page):
-            print("Reusing existing session - login skipped")
+        if skip_login:
+            print("SKIP_LOGIN enabled - testing logged-out profile access, no X credentials used")
+            context = browser.new_context()
+            page = context.new_page()
         else:
-            login(page)
+            storage_state = SESSION_FILE if os.path.exists(SESSION_FILE) else None
+            context = browser.new_context(storage_state=storage_state)
+            page = context.new_page()
+
+            if storage_state and is_logged_in(page):
+                print("Reusing existing session - login skipped")
+            else:
+                login(page)
 
         try:
             context.storage_state(path=SESSION_FILE)
