@@ -9,6 +9,11 @@ on:
     - cron: "7,37 * * * *"
     - cron: "22,52 * * * *"
   workflow_dispatch:
+    inputs:
+      skip_login:
+        description: "Test logged-out mode (true/false)"
+        required: false
+        default: "false"
 
 jobs:
   check-posts:
@@ -44,6 +49,7 @@ jobs:
           X_PASSWORD: ${{ secrets.X_PASSWORD }}
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           BATCH: ${{ steps.batch.outputs.batch }}
+          SKIP_LOGIN: ${{ github.event.inputs.skip_login || 'false' }}
         run: python tracker.py
         continue-on-error: true
 
