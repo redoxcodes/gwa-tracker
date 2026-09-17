@@ -6,23 +6,7 @@ cron. Telegram message handling (/generate, /addsub, /removesub,
 /broadcast, token redemption, /start fallback) happens instantly via a
 Cloudflare Worker + KV — this script no longer polls Telegram.
 Subscribers are read/written through the Worker's own /subscribers
-endpoint (not Cloudflare's classic KV REST API, which had a
-persistent auth issue).
-
-This script's job, each run:
-  1. Read the current subscriber list from the Worker
-  2. Expire anyone past their 31-day access, notify them, write the
-     updated list back
-  3. Check tracked accounts for new keyword-matching tweets via
-     twitterapi.io's advanced_search, batched into a handful of OR
-     queries to keep costs low
-  4. Send Telegram alerts for any new matching tweets to all
-     currently active subscribers
-
-Local state files (created on first run if missing):
-  - accounts.json   : list of tracked X/Twitter usernames (yours to edit)
-  - seen_posts.json : list of tweet IDs already alerted on
-  - last_check.txt  : ISO timestamp of the last tweet-check window
+endpoint.
 
 Required secrets / env vars:
   - TELEGRAM_BOT_TOKEN
@@ -43,7 +27,7 @@ import requests
 # ---------------------------------------------------------------------------
 
 KEYWORDS = ["@metawin", "username", "metawin.com"]
-MAX_QUERY_CHARS = 480  # stay safely under twitterapi.io's ~512 char limit
+MAX_QUERY_CHARS = 480
 
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TWITTERAPI_KEY = os.environ["TWITTERAPI_KEY"]
@@ -65,10 +49,6 @@ ACCOUNTS_FILE = "accounts.json"
 SEEN_POSTS_FILE = "seen_posts.json"
 LAST_CHECK_FILE = "last_check.txt"
 
-
-# ---------------------------------------------------------------------------
-# Small local JSON/state helpers
-# ---------------------------------------------------------------------------
 
 def load_json(path, default):
     if not os.path.exists(path):
@@ -106,10 +86,6 @@ def parse_iso(s):
     return datetime.fromisoformat(s)
 
 
-# ---------------------------------------------------------------------------
-# Subscriber storage (via the Worker's /subscribers endpoint)
-# ---------------------------------------------------------------------------
-
 def get_subscribers():
     try:
         resp = requests.get(
@@ -140,10 +116,6 @@ def save_subscribers(subscribers):
         print(f"[warn] failed to save subscribers: {e}")
 
 
-# ---------------------------------------------------------------------------
-# Telegram helper
-# ---------------------------------------------------------------------------
-
 def tg_send(chat_id, text):
     try:
         requests.post(
@@ -154,10 +126,6 @@ def tg_send(chat_id, text):
     except requests.RequestException as e:
         print(f"[warn] failed to send Telegram message to {chat_id}: {e}")
 
-
-# ---------------------------------------------------------------------------
-# Step 1: expire old subscriptions
-# ---------------------------------------------------------------------------
 
 def expire_subscribers(subscribers):
     now = utcnow()
@@ -171,12 +139,7 @@ def expire_subscribers(subscribers):
         tg_send(chat_id, EXPIRED_MESSAGE)
 
 
-# ---------------------------------------------------------------------------
-# Step 2: check tracked accounts for new keyword-matching tweets
-# ---------------------------------------------------------------------------
-
 def batch_accounts(accounts, keyword_clause, max_chars):
-    """Group accounts into OR-queries that stay under the char budget."""
     batches = []
     current = []
     for account in accounts:
@@ -196,6 +159,7 @@ def batch_accounts(accounts, keyword_clause, max_chars):
 def search_batch(accounts, keyword_clause, since_str, until_str):
     from_clause = " OR ".join(f"from:{a}" for a in accounts)
     query = f"({from_clause}) ({keyword_clause}) since:{since_str} until:{until_str} -is:retweet"
+    print(f"[debug] query: {query}")
 
     headers = {"X-API-Key": TWITTERAPI_KEY}
     all_tweets = []
@@ -206,13 +170,20 @@ def search_batch(accounts, keyword_clause, since_str, until_str):
         if cursor:
             params["cursor"] = cursor
 
-        resp = requests.get(TWITTERAPI_SEARCH_URL, headers=headers, params=params, timeout=30)
+        try:
+            resp = requests.get(TWITTERAPI_SEARCH_URL, headers=headers, params=params, timeout=25)
+        except requests.RequestException as e:
+            print(f"[warn] search request failed, skipping this batch: {e}")
+            break
+
         if resp.status_code != 200:
             print(f"[warn] search failed ({resp.status_code}): {resp.text[:200]}")
             break
 
         data = resp.json()
-        all_tweets.extend(data.get("tweets", []))
+        batch_tweets = data.get("tweets", [])
+        print(f"[debug] got {len(batch_tweets)} tweets in this page")
+        all_tweets.extend(batch_tweets)
 
         if data.get("has_next_page") and data.get("next_cursor"):
             cursor = data["next_cursor"]
@@ -239,6 +210,8 @@ def check_new_tweets(seen_posts):
 
     since_str = since_dt.strftime("%Y-%m-%d_%H:%M:%S_UTC")
     until_str = until_dt.strftime("%Y-%m-%d_%H:%M:%S_UTC")
+    print(f"[debug] checking window: {since_str} to {until_str}")
+    print(f"[debug] tracking {len(accounts)} accounts")
 
     new_tweets = []
     for batch in batch_accounts(accounts, keyword_clause, MAX_QUERY_CHARS):
@@ -248,20 +221,15 @@ def check_new_tweets(seen_posts):
             if tweet_id and tweet_id not in seen_posts:
                 new_tweets.append(tweet)
                 seen_posts.append(tweet_id)
-        time.sleep(0.5)  # be gentle on rate limits between batches
+        time.sleep(0.5)
 
     save_text(LAST_CHECK_FILE, iso(until_dt))
 
-    # keep seen_posts from growing forever
     if len(seen_posts) > 2000:
         del seen_posts[: len(seen_posts) - 2000]
 
     return new_tweets
 
-
-# ---------------------------------------------------------------------------
-# Step 3: alert subscribers
-# ---------------------------------------------------------------------------
 
 def alert_subscribers(subscribers, tweets):
     if not tweets or not subscribers:
@@ -277,10 +245,6 @@ def alert_subscribers(subscribers, tweets):
         for chat_id in subscribers:
             tg_send(chat_id, message)
 
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 
 def main():
     subscribers = get_subscribers()
