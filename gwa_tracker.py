@@ -5,7 +5,7 @@ Runs once per invocation (designed to be triggered every 10 minutes by
 GitHub Actions cron). Each run:
 
   1. Processes any new Telegram messages since the last run
-     - admin commands: /generate, /addsub <chat_id>, /removesub <chat_id>
+     - admin commands: /generate, /addsub <chat_id>, /removesub <chat_id>, /broadcast <message>
      - token redemption from any user (plain message = the token text)
      - fallback "subscribe to gain access" message for anyone else
   2. Expires any subscriber whose 31-day access has run out, and
@@ -57,8 +57,6 @@ TWITTERAPI_SEARCH_URL = "https://api.twitterapi.io/twitter/tweet/advanced_search
 SUBSCRIBE_MESSAGE = (
     "Subscribe to gain access to all notifications from Metawin giveaway host. "
     f"DM me here to get a token: {ADMIN_HANDLE}"
-)
-
 )
 EXPIRED_MESSAGE = (
     "Your subscription has ended. "
@@ -193,6 +191,16 @@ def process_telegram_updates(subscribers, tokens):
                     tg_send(chat_id, f"Removed {parts[1]}.")
                 else:
                     tg_send(chat_id, "Usage: /removesub <chat_id> (must be an existing subscriber)")
+                continue
+
+            if text.startswith("/broadcast"):
+                announcement = text[len("/broadcast"):].strip()
+                if announcement:
+                    for sub_chat_id in subscribers:
+                        tg_send(sub_chat_id, announcement)
+                    tg_send(chat_id, f"Broadcast sent to {len(subscribers)} subscribers.")
+                else:
+                    tg_send(chat_id, "Usage: /broadcast <your message>")
                 continue
 
         # --- Token redemption (any user) ---
