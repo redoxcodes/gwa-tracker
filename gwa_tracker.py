@@ -1,5 +1,5 @@
 """
-gwa-tracker main script (v4).
+gwa-tracker main script (v5).
 
 Runs once per invocation, triggered every 10 minutes by GitHub Actions
 cron. Telegram message handling happens instantly via a Cloudflare
@@ -183,6 +183,7 @@ def search_batch(accounts, keyword_clause, since_str, until_str):
             break
 
         data = resp.json()
+        print(f"[debug] raw response snippet: {resp.text[:500]}")
         batch_tweets = data.get("tweets", [])
         print(f"[debug] got {len(batch_tweets)} tweets in this page")
         all_tweets.extend(batch_tweets)
