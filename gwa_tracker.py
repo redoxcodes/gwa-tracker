@@ -1,38 +1,39 @@
 """
-gwa-tracker main script.
+gwa-tracker main script (v2).
 
-Runs once per invocation (designed to be triggered every 10 minutes by
-GitHub Actions cron). Each run:
+Runs once per invocation, triggered every 10 minutes by GitHub Actions
+cron. Telegram message handling (/generate, /addsub, /removesub,
+/broadcast, token redemption, /start fallback) now happens instantly
+via a Cloudflare Worker + KV — this script no longer polls Telegram
+at all.
 
-  1. Processes any new Telegram messages since the last run
-     - admin commands: /generate, /addsub <chat_id>, /removesub <chat_id>, /broadcast <message>
-     - token redemption from any user (plain message = the token text)
-     - fallback "subscribe to gain access" message for anyone else
-  2. Expires any subscriber whose 31-day access has run out, and
-     notifies them
-  3. Checks tracked accounts for new keyword-matching tweets via
+This script's job, each run:
+  1. Read the current subscriber list from Cloudflare KV (the same
+     store the Worker writes to)
+  2. Expire anyone past their 31-day access, notify them, write the
+     updated list back to KV
+  3. Check tracked accounts for new keyword-matching tweets via
      twitterapi.io's advanced_search, batched into a handful of OR
      queries to keep costs low
-  4. Sends Telegram alerts for any new matching tweets to all active
-     subscribers
+  4. Send Telegram alerts for any new matching tweets to all
+     currently active subscribers
 
-State files (all plain JSON, created on first run if missing):
-  - accounts.json      : list of tracked X/Twitter usernames (yours to edit)
-  - subscribers.json    : {chat_id: {"expires_at": iso_str}}
-  - tokens.json         : {token: {"used": bool, "used_by": chat_id|None}}
-  - seen_posts.json     : list of tweet IDs already alerted on
-  - last_update_id.txt  : last processed Telegram update_id
-  - last_check.txt      : ISO timestamp of the last tweet-check window
+Local state files (still plain JSON/text, created on first run if
+missing):
+  - accounts.json   : list of tracked X/Twitter usernames (yours to edit)
+  - seen_posts.json : list of tweet IDs already alerted on
+  - last_check.txt  : ISO timestamp of the last tweet-check window
 
 Required secrets / env vars:
   - TELEGRAM_BOT_TOKEN
   - TWITTERAPI_KEY
+  - CF_ACCOUNT_ID
+  - CF_KV_NAMESPACE_ID
+  - CF_API_TOKEN
 """
 
 import json
 import os
-import secrets as pysecrets
-import string
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -42,37 +43,36 @@ import requests
 # Config
 # ---------------------------------------------------------------------------
 
-ADMIN_CHAT_ID = 1465049104
-ADMIN_HANDLE = "https://t.me/amredox"
 KEYWORDS = ["@metawin", "username", "metawin.com"]
-SUBSCRIPTION_DAYS = 31
 MAX_QUERY_CHARS = 480  # stay safely under twitterapi.io's ~512 char limit
 
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TWITTERAPI_KEY = os.environ["TWITTERAPI_KEY"]
+CF_ACCOUNT_ID = os.environ["CF_ACCOUNT_ID"]
+CF_KV_NAMESPACE_ID = os.environ["CF_KV_NAMESPACE_ID"]
+CF_API_TOKEN = os.environ["CF_API_TOKEN"]
 
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 TWITTERAPI_SEARCH_URL = "https://api.twitterapi.io/twitter/tweet/advanced_search"
+CF_KV_BASE = (
+    f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}"
+    f"/storage/kv/namespaces/{CF_KV_NAMESPACE_ID}/values"
+)
 
-SUBSCRIBE_MESSAGE = (
+ADMIN_HANDLE = "https://t.me/amredox"
+EXPIRED_MESSAGE = (
+    "Your subscription has ended. "
     "Subscribe to gain access to all notifications from Metawin giveaway host. "
     f"DM me here to get a token: {ADMIN_HANDLE}"
 )
-EXPIRED_MESSAGE = (
-    "Your subscription has ended. "
-    + SUBSCRIBE_MESSAGE
-)
 
 ACCOUNTS_FILE = "accounts.json"
-SUBSCRIBERS_FILE = "subscribers.json"
-TOKENS_FILE = "tokens.json"
 SEEN_POSTS_FILE = "seen_posts.json"
-LAST_UPDATE_ID_FILE = "last_update_id.txt"
 LAST_CHECK_FILE = "last_check.txt"
 
 
 # ---------------------------------------------------------------------------
-# Small JSON/state helpers
+# Small local JSON/state helpers
 # ---------------------------------------------------------------------------
 
 def load_json(path, default):
@@ -112,7 +112,39 @@ def parse_iso(s):
 
 
 # ---------------------------------------------------------------------------
-# Telegram helpers
+# Cloudflare KV helpers (shared state with the Worker)
+# ---------------------------------------------------------------------------
+
+def kv_get(key, default):
+    resp = requests.get(
+        f"{CF_KV_BASE}/{key}",
+        headers={"Authorization": f"Bearer {CF_API_TOKEN}"},
+        timeout=15,
+    )
+    if resp.status_code != 200:
+        return default
+    try:
+        return json.loads(resp.text)
+    except json.JSONDecodeError:
+        return default
+
+
+def kv_put(key, value):
+    resp = requests.put(
+        f"{CF_KV_BASE}/{key}",
+        headers={
+            "Authorization": f"Bearer {CF_API_TOKEN}",
+            "Content-Type": "application/json",
+        },
+        data=json.dumps(value),
+        timeout=15,
+    )
+    if resp.status_code != 200:
+        print(f"[warn] failed to write KV key '{key}' ({resp.status_code}): {resp.text[:200]}")
+
+
+# ---------------------------------------------------------------------------
+# Telegram helper
 # ---------------------------------------------------------------------------
 
 def tg_send(chat_id, text):
@@ -126,103 +158,8 @@ def tg_send(chat_id, text):
         print(f"[warn] failed to send Telegram message to {chat_id}: {e}")
 
 
-def tg_get_updates(last_update_id):
-    resp = requests.get(
-        f"{TELEGRAM_API}/getUpdates",
-        params={"offset": last_update_id + 1, "timeout": 0},
-        timeout=15,
-    )
-    resp.raise_for_status()
-    return resp.json().get("result", [])
-
-
 # ---------------------------------------------------------------------------
-# Token handling
-# ---------------------------------------------------------------------------
-
-def generate_token():
-    alphabet = string.ascii_lowercase + string.digits
-    return "mw-" + "".join(pysecrets.choice(alphabet) for _ in range(10))
-
-
-def grant_subscription(subscribers, chat_id):
-    expires_at = utcnow() + timedelta(days=SUBSCRIPTION_DAYS)
-    subscribers[str(chat_id)] = {"expires_at": iso(expires_at)}
-
-
-# ---------------------------------------------------------------------------
-# Step 1: process incoming Telegram messages
-# ---------------------------------------------------------------------------
-
-def process_telegram_updates(subscribers, tokens):
-    last_update_id = int(load_text(LAST_UPDATE_ID_FILE, "0") or "0")
-    updates = tg_get_updates(last_update_id)
-
-    for update in updates:
-        last_update_id = max(last_update_id, update["update_id"])
-        message = update.get("message")
-        if not message or "text" not in message:
-            continue
-
-        chat_id = message["chat"]["id"]
-        text = message["text"].strip()
-
-        # --- Admin commands ---
-        if chat_id == ADMIN_CHAT_ID:
-            if text == "/generate":
-                token = generate_token()
-                tokens[token] = {"used": False, "used_by": None}
-                tg_send(chat_id, f"New token: {token}")
-                continue
-
-            if text.startswith("/addsub"):
-                parts = text.split()
-                if len(parts) == 2:
-                    grant_subscription(subscribers, parts[1])
-                    tg_send(chat_id, f"Added {parts[1]} for {SUBSCRIPTION_DAYS} days.")
-                else:
-                    tg_send(chat_id, "Usage: /addsub <chat_id>")
-                continue
-
-            if text.startswith("/removesub"):
-                parts = text.split()
-                if len(parts) == 2 and parts[1] in subscribers:
-                    del subscribers[parts[1]]
-                    tg_send(chat_id, f"Removed {parts[1]}.")
-                else:
-                    tg_send(chat_id, "Usage: /removesub <chat_id> (must be an existing subscriber)")
-                continue
-
-            if text.startswith("/broadcast"):
-                announcement = text[len("/broadcast"):].strip()
-                if announcement:
-                    for sub_chat_id in subscribers:
-                        tg_send(sub_chat_id, announcement)
-                    tg_send(chat_id, f"Broadcast sent to {len(subscribers)} subscribers.")
-                else:
-                    tg_send(chat_id, "Usage: /broadcast <your message>")
-                continue
-
-        # --- Token redemption (any user) ---
-        candidate = text
-        if candidate in tokens and not tokens[candidate]["used"]:
-            tokens[candidate]["used"] = True
-            tokens[candidate]["used_by"] = chat_id
-            grant_subscription(subscribers, chat_id)
-            tg_send(
-                chat_id,
-                f"You're subscribed! Access lasts {SUBSCRIPTION_DAYS} days.",
-            )
-            continue
-
-        # --- Fallback ---
-        tg_send(chat_id, SUBSCRIBE_MESSAGE)
-
-    save_text(LAST_UPDATE_ID_FILE, last_update_id)
-
-
-# ---------------------------------------------------------------------------
-# Step 2: expire old subscriptions
+# Step 1: expire old subscriptions
 # ---------------------------------------------------------------------------
 
 def expire_subscribers(subscribers):
@@ -238,7 +175,7 @@ def expire_subscribers(subscribers):
 
 
 # ---------------------------------------------------------------------------
-# Step 3: check tracked accounts for new keyword-matching tweets
+# Step 2: check tracked accounts for new keyword-matching tweets
 # ---------------------------------------------------------------------------
 
 def batch_accounts(accounts, keyword_clause, max_chars):
@@ -326,7 +263,7 @@ def check_new_tweets(seen_posts):
 
 
 # ---------------------------------------------------------------------------
-# Step 4: alert subscribers
+# Step 3: alert subscribers
 # ---------------------------------------------------------------------------
 
 def alert_subscribers(subscribers, tweets):
@@ -349,18 +286,15 @@ def alert_subscribers(subscribers, tweets):
 # ---------------------------------------------------------------------------
 
 def main():
-    subscribers = load_json(SUBSCRIBERS_FILE, {})
-    tokens = load_json(TOKENS_FILE, {})
+    subscribers = kv_get("subscribers", {})
     seen_posts = load_json(SEEN_POSTS_FILE, [])
 
-    process_telegram_updates(subscribers, tokens)
     expire_subscribers(subscribers)
 
     new_tweets = check_new_tweets(seen_posts)
     alert_subscribers(subscribers, new_tweets)
 
-    save_json(SUBSCRIBERS_FILE, subscribers)
-    save_json(TOKENS_FILE, tokens)
+    kv_put("subscribers", subscribers)
     save_json(SEEN_POSTS_FILE, seen_posts)
 
 
