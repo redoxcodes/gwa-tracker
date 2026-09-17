@@ -1,12 +1,9 @@
 """
-gwa-tracker main script (v3).
+gwa-tracker main script (v4).
 
 Runs once per invocation, triggered every 10 minutes by GitHub Actions
-cron. Telegram message handling (/generate, /addsub, /removesub,
-/broadcast, token redemption, /start fallback) happens instantly via a
-Cloudflare Worker + KV — this script no longer polls Telegram.
-Subscribers are read/written through the Worker's own /subscribers
-endpoint.
+cron. Telegram message handling happens instantly via a Cloudflare
+Worker + KV — this script only checks tweets and expiry.
 
 Required secrets / env vars:
   - TELEGRAM_BOT_TOKEN
@@ -21,10 +18,6 @@ import time
 from datetime import datetime, timedelta, timezone
 
 import requests
-
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
 
 KEYWORDS = ["@metawin", "username", "metawin.com"]
 MAX_QUERY_CHARS = 480
@@ -176,6 +169,15 @@ def search_batch(accounts, keyword_clause, since_str, until_str):
             print(f"[warn] search request failed, skipping this batch: {e}")
             break
 
+        if resp.status_code == 429:
+            print("[warn] rate limited (429), waiting 6s and retrying once")
+            time.sleep(6)
+            try:
+                resp = requests.get(TWITTERAPI_SEARCH_URL, headers=headers, params=params, timeout=25)
+            except requests.RequestException as e:
+                print(f"[warn] retry also failed, skipping this batch: {e}")
+                break
+
         if resp.status_code != 200:
             print(f"[warn] search failed ({resp.status_code}): {resp.text[:200]}")
             break
@@ -221,7 +223,7 @@ def check_new_tweets(seen_posts):
             if tweet_id and tweet_id not in seen_posts:
                 new_tweets.append(tweet)
                 seen_posts.append(tweet_id)
-        time.sleep(0.5)
+        time.sleep(6)  # free tier allows 1 request every 5 seconds; stay safely under
 
     save_text(LAST_CHECK_FILE, iso(until_dt))
 
