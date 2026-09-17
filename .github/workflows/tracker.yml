@@ -29,4 +29,13 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TWITTERAPI_KEY: ${{ secrets.TWITTERAPI_KEY }}
           WORKER_URL: ${{ secrets.WORKER_URL }}
-          WEBHOOK_SECRET: ${{
+          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
+        run: python gwa_tracker.py
+
+      - name: Commit updated state files
+        run: |
+          git config user.name "gwa-tracker-bot"
+          git config user.email "actions@github.com"
+          git add seen_posts.json last_check.txt
+          git diff --staged --quiet || git commit -m "Update tracker state [skip ci]"
+          git push
