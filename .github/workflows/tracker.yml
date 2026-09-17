@@ -1,65 +1,39 @@
-name: GWA Tracker
+name: gwa-tracker
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
 
 concurrency:
   group: gwa-tracker
   cancel-in-progress: false
 
-on:
-  schedule:
-    - cron: "7,37 * * * *"
-    - cron: "22,52 * * * *"
-  workflow_dispatch:
-
 jobs:
-  check-posts:
+  check:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out repo
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          playwright install --with-deps chromium
-
-      - name: Determine batch
-        id: batch
-        run: |
-          if [ "${{ github.event.schedule }}" == "7,37 * * * *" ]; then
-            echo "batch=A" >> $GITHUB_OUTPUT
-          elif [ "${{ github.event.schedule }}" == "22,52 * * * *" ]; then
-            echo "batch=B" >> $GITHUB_OUTPUT
-          else
-            echo "batch=ALL" >> $GITHUB_OUTPUT
-          fi
+        run: pip install requests
 
       - name: Run tracker
         env:
-          X_USERNAME: ${{ secrets.X_USERNAME }}
-          X_PASSWORD: ${{ secrets.X_PASSWORD }}
-          TG_TOKEN: ${{ secrets.TG_TOKEN }}
-          BATCH: ${{ steps.batch.outputs.batch }}
-        run: python tracker.py
-        continue-on-error: true
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TWITTERAPI_KEY: ${{ secrets.TWITTERAPI_KEY }}
+        run: python gwa_tracker.py
 
-      - name: Upload debug screenshots
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: debug-screenshots
-          path: debug_*.png
-          if-no-files-found: ignore
-
-      - name: Commit updated tracking files
+      - name: Commit updated state files
         run: |
           git config user.name "gwa-tracker-bot"
           git config user.email "actions@github.com"
-          git add seen_posts.json subscribers.json last_update_id.txt session_state.json
-          git commit -m "Update tracking state" || echo "No changes to commit"
-          git pull --rebase origin main
+          git add subscribers.json tokens.json seen_posts.json last_update_id.txt last_check.txt
+          git diff --staged --quiet || git commit -m "Update tracker state [skip ci]"
           git push
