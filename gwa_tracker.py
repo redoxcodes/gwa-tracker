@@ -219,4 +219,140 @@ def expire_subscribers(subscribers):
     now = utcnow()
     expired = [
         chat_id
-        for chat
+        for chat_id, info in subscribers.items()
+        if parse_iso(info["expires_at"]) <= now
+    ]
+    for chat_id in expired:
+        del subscribers[chat_id]
+        tg_send(chat_id, EXPIRED_MESSAGE)
+
+
+# ---------------------------------------------------------------------------
+# Step 3: check tracked accounts for new keyword-matching tweets
+# ---------------------------------------------------------------------------
+
+def batch_accounts(accounts, keyword_clause, max_chars):
+    """Group accounts into OR-queries that stay under the char budget."""
+    batches = []
+    current = []
+    for account in accounts:
+        trial = current + [account]
+        from_clause = " OR ".join(f"from:{a}" for a in trial)
+        query = f"({from_clause}) ({keyword_clause}) -is:retweet"
+        if len(query) > max_chars and current:
+            batches.append(current)
+            current = [account]
+        else:
+            current = trial
+    if current:
+        batches.append(current)
+    return batches
+
+
+def search_batch(accounts, keyword_clause, since_str, until_str):
+    from_clause = " OR ".join(f"from:{a}" for a in accounts)
+    query = f"({from_clause}) ({keyword_clause}) since:{since_str} until:{until_str} -is:retweet"
+
+    headers = {"X-API-Key": TWITTERAPI_KEY}
+    all_tweets = []
+    cursor = None
+
+    while True:
+        params = {"query": query, "queryType": "Latest"}
+        if cursor:
+            params["cursor"] = cursor
+
+        resp = requests.get(TWITTERAPI_SEARCH_URL, headers=headers, params=params, timeout=30)
+        if resp.status_code != 200:
+            print(f"[warn] search failed ({resp.status_code}): {resp.text[:200]}")
+            break
+
+        data = resp.json()
+        all_tweets.extend(data.get("tweets", []))
+
+        if data.get("has_next_page") and data.get("next_cursor"):
+            cursor = data["next_cursor"]
+        else:
+            break
+
+    return all_tweets
+
+
+def check_new_tweets(seen_posts):
+    accounts = load_json(ACCOUNTS_FILE, [])
+    if not accounts:
+        print("[warn] accounts.json is empty or missing — nothing to check")
+        return []
+
+    keyword_clause = " OR ".join(KEYWORDS)
+
+    since_str_raw = load_text(LAST_CHECK_FILE, "")
+    if since_str_raw:
+        since_dt = parse_iso(since_str_raw)
+    else:
+        since_dt = utcnow() - timedelta(minutes=15)
+    until_dt = utcnow()
+
+    since_str = since_dt.strftime("%Y-%m-%d_%H:%M:%S_UTC")
+    until_str = until_dt.strftime("%Y-%m-%d_%H:%M:%S_UTC")
+
+    new_tweets = []
+    for batch in batch_accounts(accounts, keyword_clause, MAX_QUERY_CHARS):
+        tweets = search_batch(batch, keyword_clause, since_str, until_str)
+        for tweet in tweets:
+            tweet_id = tweet.get("id")
+            if tweet_id and tweet_id not in seen_posts:
+                new_tweets.append(tweet)
+                seen_posts.append(tweet_id)
+        time.sleep(0.5)  # be gentle on rate limits between batches
+
+    save_text(LAST_CHECK_FILE, iso(until_dt))
+
+    # keep seen_posts from growing forever
+    if len(seen_posts) > 2000:
+        del seen_posts[: len(seen_posts) - 2000]
+
+    return new_tweets
+
+
+# ---------------------------------------------------------------------------
+# Step 4: alert subscribers
+# ---------------------------------------------------------------------------
+
+def alert_subscribers(subscribers, tweets):
+    if not tweets or not subscribers:
+        return
+
+    for tweet in tweets:
+        author = tweet.get("author", {}).get("userName", "unknown")
+        text = tweet.get("text", "")[:150]
+        tweet_id = tweet.get("id", "")
+        url = f"https://x.com/{author}/status/{tweet_id}"
+        message = f"New post from @{author}:\n\n{text}\n\n{url}"
+
+        for chat_id in subscribers:
+            tg_send(chat_id, message)
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main():
+    subscribers = load_json(SUBSCRIBERS_FILE, {})
+    tokens = load_json(TOKENS_FILE, {})
+    seen_posts = load_json(SEEN_POSTS_FILE, [])
+
+    process_telegram_updates(subscribers, tokens)
+    expire_subscribers(subscribers)
+
+    new_tweets = check_new_tweets(seen_posts)
+    alert_subscribers(subscribers, new_tweets)
+
+    save_json(SUBSCRIBERS_FILE, subscribers)
+    save_json(TOKENS_FILE, tokens)
+    save_json(SEEN_POSTS_FILE, seen_posts)
+
+
+if __name__ == "__main__":
+    main()
