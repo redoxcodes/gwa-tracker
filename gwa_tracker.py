@@ -1,151 +1,263 @@
-const ADMIN_CHAT_ID = 1465049104;
-const ADMIN_HANDLE = "https://t.me/amredox";
-const SUBSCRIPTION_DAYS = 31;
-const SUBSCRIBE_MESSAGE =
-  "Subscribe to gain access to all notifications from Metawin giveaway host. " +
-  "DM me here to get a token: " + ADMIN_HANDLE;
+"""
+gwa-tracker main script (v3).
 
-function generateToken() {
-  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
-  let token = "mw-";
-  for (let i = 0; i < 10; i++) {
-    token += chars[Math.floor(Math.random() * chars.length)];
-  }
-  return token;
-}
+Runs once per invocation, triggered every 10 minutes by GitHub Actions
+cron. Telegram message handling (/generate, /addsub, /removesub,
+/broadcast, token redemption, /start fallback) happens instantly via a
+Cloudflare Worker + KV — this script no longer polls Telegram.
+Subscribers are read/written through the Worker's own /subscribers
+endpoint.
 
-export default {
-  async fetch(request, env) {
-    const url = new URL(request.url);
+Required secrets / env vars:
+  - TELEGRAM_BOT_TOKEN
+  - TWITTERAPI_KEY
+  - WORKER_URL
+  - WEBHOOK_SECRET
+"""
 
-    // Secrets Store bindings require .get() to retrieve the actual value
-    const webhookSecret = await env.WEBHOOK_SECRET.get();
-    const telegramToken = await env.TELEGRAM_BOT_TOKEN.get();
+import json
+import os
+import time
+from datetime import datetime, timedelta, timezone
 
-    // Internal endpoint for GitHub Actions to read/write subscribers,
-    // protected by the same secret (checked via a header instead of
-    // Telegram's secret_token header).
-    if (url.pathname === "/subscribers") {
-      const apiSecret = request.headers.get("X-Api-Secret");
-      if (apiSecret !== webhookSecret) {
-        return new Response("Unauthorized", { status: 401 });
-      }
-      if (request.method === "GET") {
-        const subs = (await env.GWA_STATE.get("subscribers")) || "{}";
-        return new Response(subs, { headers: { "Content-Type": "application/json" } });
-      }
-      if (request.method === "POST") {
-        const body = await request.text();
-        await env.GWA_STATE.put("subscribers", body);
-        return new Response("OK");
-      }
-      return new Response("Method not allowed", { status: 405 });
-    }
+import requests
 
-    if (request.method !== "POST") {
-      return new Response("OK");
-    }
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
 
-    // Only accept requests carrying the secret Telegram sends us
-    const secretHeader = request.headers.get("X-Telegram-Bot-Api-Secret-Token");
-    if (secretHeader !== webhookSecret) {
-      return new Response("Unauthorized", { status: 401 });
-    }
+KEYWORDS = ["@metawin", "username", "metawin.com"]
+MAX_QUERY_CHARS = 480
 
-    const update = await request.json();
-    const message = update.message;
-    if (!message || !message.text) {
-      return new Response("OK");
-    }
+TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+TWITTERAPI_KEY = os.environ["TWITTERAPI_KEY"]
+WORKER_URL = os.environ["WORKER_URL"]
+WEBHOOK_SECRET = os.environ["WEBHOOK_SECRET"]
 
-    const chatId = message.chat.id;
-    const text = message.text.trim();
+TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+TWITTERAPI_SEARCH_URL = "https://api.twitterapi.io/twitter/tweet/advanced_search"
+SUBSCRIBERS_ENDPOINT = f"{WORKER_URL}/subscribers"
 
-    async function send(toChatId, msg) {
-      await fetch(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: toChatId, text: msg }),
-      });
-    }
+ADMIN_HANDLE = "https://t.me/amredox"
+EXPIRED_MESSAGE = (
+    "Your subscription has ended. "
+    "Subscribe to gain access to all notifications from Metawin giveaway host. "
+    f"DM me here to get a token: {ADMIN_HANDLE}"
+)
 
-    const subscribers = JSON.parse((await env.GWA_STATE.get("subscribers")) || "{}");
-    const tokens = JSON.parse((await env.GWA_STATE.get("tokens")) || "{}");
-    let changed = false;
+ACCOUNTS_FILE = "accounts.json"
+SEEN_POSTS_FILE = "seen_posts.json"
+LAST_CHECK_FILE = "last_check.txt"
 
-    function grantSubscription(id) {
-      const expiresAt = new Date(Date.now() + SUBSCRIPTION_DAYS * 86400000).toISOString();
-      subscribers[String(id)] = { expires_at: expiresAt };
-    }
 
-    async function handleTokenOrFallback() {
-      if (tokens[text] && !tokens[text].used) {
-        tokens[text].used = true;
-        tokens[text].used_by = chatId;
-        grantSubscription(chatId);
-        changed = true;
-        await send(chatId, `You're subscribed! Access lasts ${SUBSCRIPTION_DAYS} days.`);
-      } else {
-        await send(chatId, SUBSCRIBE_MESSAGE);
-      }
-    }
+def load_json(path, default):
+    if not os.path.exists(path):
+        return default
+    with open(path, "r") as f:
+        return json.load(f)
 
-    if (chatId === ADMIN_CHAT_ID) {
-      if (text === "/admin") {
-        await send(
-          chatId,
-          "Admin menu:\n\n" +
-            "/generate — create a new one-time token\n" +
-            "/addsub <chat_id> — grant access without a token\n" +
-            "/removesub <chat_id> — remove a subscriber's access\n" +
-            "/broadcast <message> — message every subscriber"
-        );
-      } else if (text === "/generate") {
-        const token = generateToken();
-        tokens[token] = { used: false, used_by: null };
-        changed = true;
-        await send(chatId, `New token: ${token}`);
-      } else if (text.startsWith("/addsub")) {
-        const parts = text.split(" ");
-        if (parts.length === 2) {
-          grantSubscription(parts[1]);
-          changed = true;
-          await send(chatId, `Added ${parts[1]} for ${SUBSCRIPTION_DAYS} days.`);
-        } else {
-          await send(chatId, "Usage: /addsub <chat_id>");
-        }
-      } else if (text.startsWith("/removesub")) {
-        const parts = text.split(" ");
-        if (parts.length === 2 && subscribers[parts[1]]) {
-          delete subscribers[parts[1]];
-          changed = true;
-          await send(chatId, `Removed ${parts[1]}.`);
-        } else {
-          await send(chatId, "Usage: /removesub <chat_id> (must be an existing subscriber)");
-        }
-      } else if (text.startsWith("/broadcast")) {
-        const announcement = text.slice("/broadcast".length).trim();
-        if (announcement) {
-          const ids = Object.keys(subscribers);
-          for (const id of ids) {
-            await send(id, announcement);
-          }
-          await send(chatId, `Broadcast sent to ${ids.length} subscribers.`);
-        } else {
-          await send(chatId, "Usage: /broadcast <your message>");
-        }
-      } else {
-        await handleTokenOrFallback();
-      }
-    } else {
-      await handleTokenOrFallback();
-    }
 
-    if (changed) {
-      await env.GWA_STATE.put("subscribers", JSON.stringify(subscribers));
-      await env.GWA_STATE.put("tokens", JSON.stringify(tokens));
-    }
+def save_json(path, data):
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
 
-    return new Response("OK");
-  },
-};
+
+def load_text(path, default=""):
+    if not os.path.exists(path):
+        return default
+    with open(path, "r") as f:
+        return f.read().strip()
+
+
+def save_text(path, text):
+    with open(path, "w") as f:
+        f.write(str(text))
+
+
+def utcnow():
+    return datetime.now(timezone.utc)
+
+
+def iso(dt):
+    return dt.isoformat()
+
+
+def parse_iso(s):
+    return datetime.fromisoformat(s)
+
+
+def get_subscribers():
+    try:
+        resp = requests.get(
+            SUBSCRIBERS_ENDPOINT,
+            headers={"X-Api-Secret": WEBHOOK_SECRET},
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            print(f"[warn] failed to read subscribers ({resp.status_code}): {resp.text[:200]}")
+            return {}
+        return resp.json()
+    except (requests.RequestException, json.JSONDecodeError) as e:
+        print(f"[warn] failed to read subscribers: {e}")
+        return {}
+
+
+def save_subscribers(subscribers):
+    try:
+        resp = requests.post(
+            SUBSCRIBERS_ENDPOINT,
+            headers={"X-Api-Secret": WEBHOOK_SECRET, "Content-Type": "application/json"},
+            data=json.dumps(subscribers),
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            print(f"[warn] failed to save subscribers ({resp.status_code}): {resp.text[:200]}")
+    except requests.RequestException as e:
+        print(f"[warn] failed to save subscribers: {e}")
+
+
+def tg_send(chat_id, text):
+    try:
+        requests.post(
+            f"{TELEGRAM_API}/sendMessage",
+            json={"chat_id": chat_id, "text": text},
+            timeout=15,
+        )
+    except requests.RequestException as e:
+        print(f"[warn] failed to send Telegram message to {chat_id}: {e}")
+
+
+def expire_subscribers(subscribers):
+    now = utcnow()
+    expired = [
+        chat_id
+        for chat_id, info in subscribers.items()
+        if parse_iso(info["expires_at"]) <= now
+    ]
+    for chat_id in expired:
+        del subscribers[chat_id]
+        tg_send(chat_id, EXPIRED_MESSAGE)
+
+
+def batch_accounts(accounts, keyword_clause, max_chars):
+    batches = []
+    current = []
+    for account in accounts:
+        trial = current + [account]
+        from_clause = " OR ".join(f"from:{a}" for a in trial)
+        query = f"({from_clause}) ({keyword_clause}) -is:retweet"
+        if len(query) > max_chars and current:
+            batches.append(current)
+            current = [account]
+        else:
+            current = trial
+    if current:
+        batches.append(current)
+    return batches
+
+
+def search_batch(accounts, keyword_clause, since_str, until_str):
+    from_clause = " OR ".join(f"from:{a}" for a in accounts)
+    query = f"({from_clause}) ({keyword_clause}) since:{since_str} until:{until_str} -is:retweet"
+    print(f"[debug] query: {query}")
+
+    headers = {"X-API-Key": TWITTERAPI_KEY}
+    all_tweets = []
+    cursor = None
+
+    while True:
+        params = {"query": query, "queryType": "Latest"}
+        if cursor:
+            params["cursor"] = cursor
+
+        try:
+            resp = requests.get(TWITTERAPI_SEARCH_URL, headers=headers, params=params, timeout=25)
+        except requests.RequestException as e:
+            print(f"[warn] search request failed, skipping this batch: {e}")
+            break
+
+        if resp.status_code != 200:
+            print(f"[warn] search failed ({resp.status_code}): {resp.text[:200]}")
+            break
+
+        data = resp.json()
+        batch_tweets = data.get("tweets", [])
+        print(f"[debug] got {len(batch_tweets)} tweets in this page")
+        all_tweets.extend(batch_tweets)
+
+        if data.get("has_next_page") and data.get("next_cursor"):
+            cursor = data["next_cursor"]
+        else:
+            break
+
+    return all_tweets
+
+
+def check_new_tweets(seen_posts):
+    accounts = load_json(ACCOUNTS_FILE, [])
+    if not accounts:
+        print("[warn] accounts.json is empty or missing — nothing to check")
+        return []
+
+    keyword_clause = " OR ".join(KEYWORDS)
+
+    since_str_raw = load_text(LAST_CHECK_FILE, "")
+    if since_str_raw:
+        since_dt = parse_iso(since_str_raw)
+    else:
+        since_dt = utcnow() - timedelta(minutes=15)
+    until_dt = utcnow()
+
+    since_str = since_dt.strftime("%Y-%m-%d_%H:%M:%S_UTC")
+    until_str = until_dt.strftime("%Y-%m-%d_%H:%M:%S_UTC")
+    print(f"[debug] checking window: {since_str} to {until_str}")
+    print(f"[debug] tracking {len(accounts)} accounts")
+
+    new_tweets = []
+    for batch in batch_accounts(accounts, keyword_clause, MAX_QUERY_CHARS):
+        tweets = search_batch(batch, keyword_clause, since_str, until_str)
+        for tweet in tweets:
+            tweet_id = tweet.get("id")
+            if tweet_id and tweet_id not in seen_posts:
+                new_tweets.append(tweet)
+                seen_posts.append(tweet_id)
+        time.sleep(0.5)
+
+    save_text(LAST_CHECK_FILE, iso(until_dt))
+
+    if len(seen_posts) > 2000:
+        del seen_posts[: len(seen_posts) - 2000]
+
+    return new_tweets
+
+
+def alert_subscribers(subscribers, tweets):
+    if not tweets or not subscribers:
+        return
+
+    for tweet in tweets:
+        author = tweet.get("author", {}).get("userName", "unknown")
+        text = tweet.get("text", "")[:150]
+        tweet_id = tweet.get("id", "")
+        url = f"https://x.com/{author}/status/{tweet_id}"
+        message = f"New post from @{author}:\n\n{text}\n\n{url}"
+
+        for chat_id in subscribers:
+            tg_send(chat_id, message)
+
+
+def main():
+    subscribers = get_subscribers()
+    seen_posts = load_json(SEEN_POSTS_FILE, [])
+
+    expire_subscribers(subscribers)
+
+    new_tweets = check_new_tweets(seen_posts)
+    alert_subscribers(subscribers, new_tweets)
+
+    save_subscribers(subscribers)
+    save_json(SEEN_POSTS_FILE, seen_posts)
+
+
+if __name__ == "__main__":
+    main()
