@@ -28,12 +28,15 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TWITTERAPI_KEY: ${{ secrets.TWITTERAPI_KEY }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_KV_NAMESPACE_ID: ${{ secrets.CF_KV_NAMESPACE_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
         run: python gwa_tracker.py
 
       - name: Commit updated state files
         run: |
           git config user.name "gwa-tracker-bot"
           git config user.email "actions@github.com"
-          git add subscribers.json tokens.json seen_posts.json last_update_id.txt last_check.txt
+          git add seen_posts.json last_check.txt
           git diff --staged --quiet || git commit -m "Update tracker state [skip ci]"
           git push
