@@ -1,25 +1,25 @@
 """
-gwa-tracker main script (v2).
+gwa-tracker main script (v3).
 
 Runs once per invocation, triggered every 10 minutes by GitHub Actions
 cron. Telegram message handling (/generate, /addsub, /removesub,
-/broadcast, token redemption, /start fallback) now happens instantly
-via a Cloudflare Worker + KV — this script no longer polls Telegram
-at all.
+/broadcast, token redemption, /start fallback) happens instantly via a
+Cloudflare Worker + KV — this script no longer polls Telegram.
+Subscribers are read/written through the Worker's own /subscribers
+endpoint (not Cloudflare's classic KV REST API, which had a
+persistent auth issue).
 
 This script's job, each run:
-  1. Read the current subscriber list from Cloudflare KV (the same
-     store the Worker writes to)
+  1. Read the current subscriber list from the Worker
   2. Expire anyone past their 31-day access, notify them, write the
-     updated list back to KV
+     updated list back
   3. Check tracked accounts for new keyword-matching tweets via
      twitterapi.io's advanced_search, batched into a handful of OR
      queries to keep costs low
   4. Send Telegram alerts for any new matching tweets to all
      currently active subscribers
 
-Local state files (still plain JSON/text, created on first run if
-missing):
+Local state files (created on first run if missing):
   - accounts.json   : list of tracked X/Twitter usernames (yours to edit)
   - seen_posts.json : list of tweet IDs already alerted on
   - last_check.txt  : ISO timestamp of the last tweet-check window
@@ -27,9 +27,8 @@ missing):
 Required secrets / env vars:
   - TELEGRAM_BOT_TOKEN
   - TWITTERAPI_KEY
-  - CF_ACCOUNT_ID
-  - CF_KV_NAMESPACE_ID
-  - CF_API_TOKEN
+  - WORKER_URL
+  - WEBHOOK_SECRET
 """
 
 import json
@@ -48,16 +47,12 @@ MAX_QUERY_CHARS = 480  # stay safely under twitterapi.io's ~512 char limit
 
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TWITTERAPI_KEY = os.environ["TWITTERAPI_KEY"]
-CF_ACCOUNT_ID = os.environ["CF_ACCOUNT_ID"]
-CF_KV_NAMESPACE_ID = os.environ["CF_KV_NAMESPACE_ID"]
-CF_API_TOKEN = os.environ["CF_API_TOKEN"]
+WORKER_URL = os.environ["WORKER_URL"]
+WEBHOOK_SECRET = os.environ["WEBHOOK_SECRET"]
 
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 TWITTERAPI_SEARCH_URL = "https://api.twitterapi.io/twitter/tweet/advanced_search"
-CF_KV_BASE = (
-    f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}"
-    f"/storage/kv/namespaces/{CF_KV_NAMESPACE_ID}/values"
-)
+SUBSCRIBERS_ENDPOINT = f"{WORKER_URL}/subscribers"
 
 ADMIN_HANDLE = "https://t.me/amredox"
 EXPIRED_MESSAGE = (
@@ -112,35 +107,37 @@ def parse_iso(s):
 
 
 # ---------------------------------------------------------------------------
-# Cloudflare KV helpers (shared state with the Worker)
+# Subscriber storage (via the Worker's /subscribers endpoint)
 # ---------------------------------------------------------------------------
 
-def kv_get(key, default):
-    resp = requests.get(
-        f"{CF_KV_BASE}/{key}",
-        headers={"Authorization": f"Bearer {CF_API_TOKEN}"},
-        timeout=15,
-    )
-    if resp.status_code != 200:
-        return default
+def get_subscribers():
     try:
-        return json.loads(resp.text)
-    except json.JSONDecodeError:
-        return default
+        resp = requests.get(
+            SUBSCRIBERS_ENDPOINT,
+            headers={"X-Api-Secret": WEBHOOK_SECRET},
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            print(f"[warn] failed to read subscribers ({resp.status_code}): {resp.text[:200]}")
+            return {}
+        return resp.json()
+    except (requests.RequestException, json.JSONDecodeError) as e:
+        print(f"[warn] failed to read subscribers: {e}")
+        return {}
 
 
-def kv_put(key, value):
-    resp = requests.put(
-        f"{CF_KV_BASE}/{key}",
-        headers={
-            "Authorization": f"Bearer {CF_API_TOKEN}",
-            "Content-Type": "application/json",
-        },
-        data=json.dumps(value),
-        timeout=15,
-    )
-    if resp.status_code != 200:
-        print(f"[warn] failed to write KV key '{key}' ({resp.status_code}): {resp.text[:200]}")
+def save_subscribers(subscribers):
+    try:
+        resp = requests.post(
+            SUBSCRIBERS_ENDPOINT,
+            headers={"X-Api-Secret": WEBHOOK_SECRET, "Content-Type": "application/json"},
+            data=json.dumps(subscribers),
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            print(f"[warn] failed to save subscribers ({resp.status_code}): {resp.text[:200]}")
+    except requests.RequestException as e:
+        print(f"[warn] failed to save subscribers: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -286,7 +283,7 @@ def alert_subscribers(subscribers, tweets):
 # ---------------------------------------------------------------------------
 
 def main():
-    subscribers = kv_get("subscribers", {})
+    subscribers = get_subscribers()
     seen_posts = load_json(SEEN_POSTS_FILE, [])
 
     expire_subscribers(subscribers)
@@ -294,7 +291,7 @@ def main():
     new_tweets = check_new_tweets(seen_posts)
     alert_subscribers(subscribers, new_tweets)
 
-    kv_put("subscribers", subscribers)
+    save_subscribers(subscribers)
     save_json(SEEN_POSTS_FILE, seen_posts)
 
 
