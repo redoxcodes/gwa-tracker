@@ -43,7 +43,7 @@ import requests
 # ---------------------------------------------------------------------------
 
 ADMIN_CHAT_ID = 1465049104
-ADMIN_HANDLE = "@amredox"
+ADMIN_HANDLE = "https://t.me/amredox"
 KEYWORDS = ["@metawin", "username", "metawin.com"]
 SUBSCRIPTION_DAYS = 31
 MAX_QUERY_CHARS = 480  # stay safely under twitterapi.io's ~512 char limit
