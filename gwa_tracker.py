@@ -202,7 +202,26 @@ def check_new_tweets(seen_posts):
         print("[warn] accounts.json is empty or missing — nothing to check")
         return []
 
+    # --- TEMPORARY SANITY CHECK: bare single-account query, wide window, no keywords ---
+    sanity_since = (utcnow() - timedelta(days=7)).strftime("%Y-%m-%d_%H:%M:%S_UTC")
+    sanity_until = utcnow().strftime("%Y-%m-%d_%H:%M:%S_UTC")
+    sanity_query = f"from:amredox since:{sanity_since} until:{sanity_until}"
+    print(f"[sanity] query: {sanity_query}")
+    try:
+        sanity_resp = requests.get(
+            TWITTERAPI_SEARCH_URL,
+            headers={"X-API-Key": TWITTERAPI_KEY},
+            params={"query": sanity_query, "queryType": "Latest"},
+            timeout=25,
+        )
+        print(f"[sanity] status: {sanity_resp.status_code}")
+        print(f"[sanity] response: {sanity_resp.text[:1000]}")
+    except requests.RequestException as e:
+        print(f"[sanity] request failed: {e}")
+    # --- END SANITY CHECK ---
+
     keyword_clause = " OR ".join(KEYWORDS)
+
 
     since_str_raw = load_text(LAST_CHECK_FILE, "")
     if since_str_raw:
