@@ -55,8 +55,10 @@ TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 TWITTERAPI_SEARCH_URL = "https://api.twitterapi.io/twitter/tweet/advanced_search"
 
 SUBSCRIBE_MESSAGE = (
-    "Subscribe to gain access to all giveaway tracked posts. "
-    f"DM {ADMIN_HANDLE} to get a token."
+    "Subscribe to gain access to all notifications from Metawin giveaway host. "
+    f"DM me here to get a token: {ADMIN_HANDLE}"
+)
+
 )
 EXPIRED_MESSAGE = (
     "Your subscription has ended. "
